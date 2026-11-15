@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+dist/
+build/
+*.deb
+*.log
+.env
+.env.*
+reports/
+profile.json
+profiles.json
+import.json
+cloud-registration.json

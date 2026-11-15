@@ -1,0 +1,43 @@
+{
+  "app_name": "AirSIM Cardputer",
+  "package_name": "airsim-cardputer",
+  "version": "0.3.11-2",
+  "bin_name": "airsim-cardputer",
+  "description": "Independent AirSIM phone and SMS client for Cardputer Zero",
+  "store": {
+    "summary": "Calls, SMS and two-way audio through an Android phone over Wi-Fi or Bluetooth.",
+    "description": "Independent AirSIM client for Cardputer Zero. Connect to an Android phone running AirSIM using Wi-Fi discovery/manual pairing or VoBLE Bluetooth. Make and answer calls, send and receive SMS, use two-way call audio, and view device battery, unread messages and missed-call numbers. Includes local contacts, call records, SIM selection and DTMF. Runs as the ordinary pi user. The app must remain open for incoming calls. No cloud/Relay mode. Wi-Fi pairing uses the Android local-mode protocol and asks before replacing its cloud registration. SMS uses the existing shared delivery queue: other clients acknowledging messages first can remove them before this client reads them. For reliable Wi-Fi reception, avoid simultaneous local SMS synchronization by other clients. Screenshots and the device recording use synthetic data. An Android phone with AirSIM and its required permissions is needed. This is not an official AirSIM release.",
+    "categories": [
+      "Radio & Comms"
+    ],
+    "screenshots": [
+      "store/screenshots/home.png",
+      "store/screenshots/messages.png",
+      "store/screenshots/connection-modes.png",
+      "store/screenshots/dial.png"
+    ],
+    "icon": "assets/icon.png",
+    "license": "PolyForm-Noncommercial-1.0.0",
+    "author": {
+      "github": "kai-wu-cortex",
+      "display_name": "Kyle"
+    },
+    "share_code": "ASCP",
+    "permissions": {
+      "camera": false,
+      "microphone": true,
+      "imu": false,
+      "network": true,
+      "additional_hardware": true,
+      "background_service": false,
+      "external_display": false
+    },
+    "locales": {
+      "zh-CN": {
+        "title": "AirSIM Cardputer",
+        "summary": "通过 Wi-Fi 或蓝牙连接安卓手机，拨打接听电话、收发短信和双向通话。"
+      }
+    },
+    "source_repo": "https://github.com/kai-wu-cortex/airsim-cardputer"
+  }
+}

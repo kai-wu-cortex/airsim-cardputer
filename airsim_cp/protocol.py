@@ -11,6 +11,7 @@ import secrets
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 import uuid
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -76,6 +77,8 @@ class Transport:
                                          headers=headers or {}, method=method)
         try:
             with self.opener.open(request, timeout=timeout) as response:
+                if response.status == 202 and path.startswith('/api/calls/early-media?'):
+                    raise AirSIMError('运营商音频尚未就绪', status=202)
                 data = response.read(4 * 1024 * 1024 + 1)
                 if len(data) > 4 * 1024 * 1024:
                     raise AirSIMError('响应超过大小限制')
@@ -84,7 +87,26 @@ class Transport:
             labels = {401: '认证失败：检查时间或重新配对', 403: '手机拒绝此网络来源',
                       404: '手机不支持此接口', 409: '通话状态已变化，请刷新',
                       410: '配对或通话已过期', 429: '请求过于频繁，请稍后再试'}
-            raise AirSIMError(labels.get(error.code, f'手机返回 HTTP {error.code}'),status=error.code) from None
+            message = labels.get(error.code, f'设备返回 HTTP {error.code}')
+            try:
+                # Show only known protocol errors, never arbitrary response text
+                # (which may contain credentials or private server diagnostics).
+                if path == '/pair/v1/claim':
+                    if error.code == 401:
+                        message = '配对码不匹配或已使用，请在设备端生成新码'
+                    elif error.code == 500:
+                        try:
+                            payload = error.read(4097)
+                            detail = json.loads(payload) if len(payload) <= 4096 else {}
+                        except (OSError, ValueError, UnicodeError):
+                            detail = {}
+                        if isinstance(detail, dict) and detail.get('error') == 'gateway_key_storage_failed':
+                            message = '设备无法保存配对密钥。请检查配对数量和存储，再生成新码'
+                        else:
+                            message = '设备配对服务错误（HTTP 500），请检查设备端日志'
+            finally:
+                error.close()
+            raise AirSIMError(message,status=error.code) from None
         except (OSError, urllib.error.URLError, TimeoutError):
             suffix = '；结果未知，请先在手机核实，勿重复操作' if method == 'POST' else ''
             raise AirSIMError('无法连接手机或请求超时' + suffix) from None
@@ -259,12 +281,32 @@ class Client:
         # /api/android/status belongs to other Agent implementations.
         status = {} if health.get('transport')=='vowlan' else self.signed('GET', '/api/android/status')[0]
         if isinstance(status,dict):
-            for key in ('sim_slots','battery','phone_number','device_name','model'):
+            for key in ('sim_slots','battery','phone_number','device_name','model','agent_kind'):
                 if key in health:status[key]=health[key]
         if not isinstance(sms, list) or not isinstance(calls, dict) or not isinstance(status, dict):
             raise AirSIMError('手机数据格式不兼容')
         # Do not ACK/delete the shared delivery queue: existing AirSIM clients still need it.
         return {'calls': calls, 'sms': sms, 'status': status}
+
+    def early_grant(self, call_id):
+        result, nonce = self.signed('GET', '/api/calls/early-media?' +
+                                    urllib.parse.urlencode({'call_id': call_id}))
+        try:
+            session, expiry = result['session_id'], result['expires_at']
+            valid = (result['version'] == 1 and result['agent_id'] == self.profile['agent_id']
+                     and result['call_id'] == call_id and result['state'] == 'early_media'
+                     and result['direction'] == 'recvonly' and result['format'] == 's16le-8000-mono'
+                     and isinstance(session, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', session)
+                     and type(expiry) is int
+                     and 0 < expiry - (time.time()+self.profile.get('clock_offset', 0)) <= 31)
+            proof = mac(self.secret, '\n'.join(['AIRSIM-EARLY-MEDIA1', nonce,
+                        self.profile['agent_id'], call_id, session, str(expiry),
+                        'early_media', 'recvonly', 's16le-8000-mono']))
+            if not valid or not hmac.compare_digest(proof, result.get('proof', '')):
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise AirSIMError('运营商音频授权未通过验证') from None
+        return result
 
     def pair(self, host, port, code, *, accept_local_mode=False):
         if not accept_local_mode:

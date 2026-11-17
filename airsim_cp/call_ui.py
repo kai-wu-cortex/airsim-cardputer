@@ -3,6 +3,7 @@ import time
 import threading
 from concurrent.futures import Future
 from .protocol import AirSIMError
+from .early_audio import EARLY_STATES
 
 INCOMING={'incoming','ringing'}
 CONNECTED={'active','connected','answered'}
@@ -85,7 +86,18 @@ class CallUI:
                 self.call_draft=None
             self.dirty=True
         if token and state in INCOMING and not self.call_minimized:self.page='calls'
+        if (token and state in EARLY_STATES and call.get('direction')=='outgoing'
+                and self.outgoing_audio_until>now and self.status.get('agent_kind')=='mu300'):
+            self.audio_intent=token
+            if (self.audio_attempted!=token and not self.busy and not self.call_future
+                    and not self.audio.active and not self.queued_call):
+                self.audio_attempted=token
+                self.start_audio(call['id'],early=True)
         if token and state in CONNECTED:
+            if getattr(self.audio.engine,'early',False):
+                self.audio.engine.early=False
+                self.audio.stop_async()
+                self.audio_attempted=None
             if not self.call_started:self.call_started=now
             second=int(now-self.call_started)
             if second!=self.call_second:self.call_second=second;self.dirty=True

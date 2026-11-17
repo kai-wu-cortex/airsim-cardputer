@@ -6,6 +6,8 @@ import time
 import secrets
 
 from .protocol import AirSIMError, b64, canonical, mac
+from .playback import SpeechPlayback, playback_command
+from .echo import EchoRoute
 
 
 class AudioSession:
@@ -18,6 +20,7 @@ class AudioSession:
         self.active = False
         self.closed = False
         self.error = ''
+        self.route = None
         self.muted = False
         self.uplink_bytes = self.downlink_bytes = 0
 
@@ -47,6 +50,11 @@ class AudioSession:
             self.error = ''
             self.uplink_bytes = self.downlink_bytes = 0
         try:
+            with self.lock:
+                if self.closed or self.stop_event.is_set():
+                    raise AirSIMError('语音已取消')
+                self.route = EchoRoute()
+            self.route.start(self.stop_event)
             profile = client.profile
             connection = socket.create_connection((profile['host'], profile['pcm_port']), timeout=8)
             with self.lock:
@@ -57,31 +65,34 @@ class AudioSession:
             nonce = b64(secrets.token_bytes(16))
             timestamp = int(time.time() + profile.get('clock_offset', 0))
             signature = mac(client.secret, canonical('PCM', '/v1/pcm', b'', timestamp, nonce))
+            connection.settimeout(25)  # MU300 may first finish receive-only DSP teardown.
             connection.sendall(f'AIRSIMVWL1 {timestamp} {nonce} {signature}\n'.encode())
             if self.exact(connection, 11) != b'AIRSIMREADY':
                 raise AirSIMError('手机语音握手失败')
+            connection.settimeout(8)
             if self.stop_event.is_set():
                 raise AirSIMError('语音已取消')
-            args = ['--raw', '--format', 's16', '--rate', '8000', '--channels', '1', '--latency', '40ms']
             with self.lock:
                 if self.closed or self.stop_event.is_set():
                     raise AirSIMError('语音已取消')
-                playback = subprocess.Popen(['pw-cat', '--playback'] + args + ['-'], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                playback = subprocess.Popen(self.route.playback(), stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 self.processes.append(playback)
-                capture = subprocess.Popen(['stdbuf', '-o0', 'pw-cat', '--record'] + args + ['-'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                capture = subprocess.Popen(self.route.capture(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 self.processes.append(capture)
                 self.active = True
+            speech = SpeechPlayback()
             def downlink():
                 while not self.stop_event.is_set():
                     frame = self.exact(connection, 320)
-                    playback.stdin.write(frame); playback.stdin.flush()
+                    playback.stdin.write(speech.process(frame)); playback.stdin.flush()
                     self.downlink_bytes += len(frame)
+            microphone = SpeechPlayback(gain_db=9)
             def uplink():
                 while not self.stop_event.is_set():
                     frame = capture.stdout.read(320)
                     if len(frame) != 320:
                         raise AirSIMError('麦克风不可用')
-                    if self.muted:frame=bytes(len(frame))
+                    frame=bytes(len(frame)) if self.muted else microphone.process(frame)
                     connection.sendall(frame)
                     self.uplink_bytes += len(frame)
             def run(function):
@@ -121,6 +132,8 @@ class AudioSession:
                     except subprocess.TimeoutExpired:
                         process.kill(); process.wait(timeout=0.5)
             self.processes = []
+            if self.route:
+                self.route.close(); self.route = None
             threads, self.threads = self.threads, []
         for thread in threads:
             if thread is not threading.current_thread():

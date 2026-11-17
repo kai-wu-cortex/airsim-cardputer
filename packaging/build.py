@@ -47,12 +47,12 @@ Categories=Network;
         shutil.copy2(ROOT / name, doc / name)
     control = stage / 'DEBIAN'; control.mkdir()
     (control / 'control').write_text('''Package: airsim-cardputer
-Version: 0.3.11-2
+Version: 0.3.13-1
 Section: net
 Priority: optional
 Architecture: arm64
 Maintainer: Kyle <kai-wu-cortex@users.noreply.github.com>
-Depends: python3 (>= 3.11), python3-pil, python3-zeroconf, python3-cryptography, python3-evdev, python3-bleak (>= 0.22), pipewire-bin, fonts-noto-cjk
+Depends: python3 (>= 3.11), python3-pil, python3-zeroconf, python3-cryptography, python3-evdev, python3-bleak (>= 0.22), pipewire-bin, libpipewire-0.3-modules, libspa-0.2-modules, wireplumber, fonts-noto-cjk
 Description: Independent AirSIM local client for Cardputer Zero
  Authenticated pairing, calls, SMS and foreground PCM audio.
  Requires an Android phone running AirSIM. No cloud mode.
@@ -62,6 +62,6 @@ Description: Independent AirSIM local client for Cardputer Zero
         for name in files:
             path = Path(directory) / name
             path.chmod(0o755 if path == launcher else 0o644)
-    output = DIST / 'airsim-cardputer_0.3.11-2_arm64.deb'
+    output = DIST / 'airsim-cardputer_0.3.13-1_arm64.deb'
     subprocess.run(['dpkg-deb', '--root-owner-group', '--build', str(stage), str(output)], check=True)
     print(output)

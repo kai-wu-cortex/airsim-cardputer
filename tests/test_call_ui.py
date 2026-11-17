@@ -35,7 +35,8 @@ class Audio:
     def __init__(self):
         self.active=False;self.error='';self.starts=[];self.stops=0;self.fail=False
         self.engine=SimpleNamespace(muted=False)
-    def start(self,client,identity):
+    def start(self,client,identity,*,early=False):
+        self.engine.early=early
         self.starts.append(identity)
         if self.fail:raise AirSIMError('测试音频失败')
         self.active=True
@@ -133,6 +134,39 @@ class CallUXTests(unittest.TestCase):
         self.settle(lambda:self.phone.link.active is None)
         future.set_result(None);self.settle(lambda:not self.app.busy)
         self.assertFalse(self.app.audio.active);self.assertEqual(self.app.audio.starts,[])
+    def test_mu300_early_media_has_no_timer_and_transitions_once(self):
+        self.app.status={'agent_kind':'mu300'}
+        self.phone.incoming('outgoing-early')
+        self.phone.link.active.update(state='dialing',direction='outgoing')
+        self.app.outgoing_audio_until=time.monotonic()+180
+        self.settle(lambda:self.app.audio.active and not self.app.busy)
+        self.assertTrue(self.app.audio.engine.early)
+        self.assertEqual(self.app.call_started,0)
+        self.phone.link.active['state']='active'
+        self.settle(lambda:len(self.app.audio.starts)==2 and not self.app.busy)
+        self.assertFalse(self.app.audio.engine.early)
+        self.assertGreater(self.app.call_started,0)
+        for _ in range(5):self.app.tick()
+        self.assertEqual(len(self.app.audio.starts),2)
+
+    def test_mu300_early_audio_does_not_take_over_external_dial(self):
+        self.app.status={'agent_kind':'mu300'}
+        self.phone.incoming('external-outgoing')
+        self.phone.link.active.update(state='dialing',direction='outgoing')
+        self.app.tick()
+        self.assertEqual(self.app.audio.starts,[])
+
+    def test_hangup_during_early_media_does_not_open_duplex(self):
+        self.app.status={'agent_kind':'mu300'}
+        self.phone.incoming('outgoing-early')
+        self.phone.link.active.update(state='dialing',direction='outgoing')
+        self.app.outgoing_audio_until=time.monotonic()+180
+        self.settle(lambda:self.app.audio.active and not self.app.busy)
+        self.app.key('8')
+        self.settle(lambda:self.phone.link.active is None and not self.app.busy)
+        self.assertEqual(len(self.app.audio.starts),1)
+        self.assertFalse(self.app.audio.active)
+
     def test_all_call_screens_render_at_native_size(self):
         for state in ('incoming','dialing','active'):
             self.phone.incoming();self.phone.link.active['state']=state;self.app.tick();self.app.page='calls'

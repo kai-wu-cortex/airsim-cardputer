@@ -6,6 +6,9 @@ import subprocess
 import threading
 import time
 from .audio import AudioSession
+from .early_audio import EarlyAudio
+from .playback import SpeechPlayback, playback_command
+from .echo import EchoRoute
 from .protocol import AirSIMError
 from . import ble_wire as wire
 
@@ -19,7 +22,7 @@ class PacketAudio:
         self.reader=wire.AudioReader();self.sequence=0;self.timestamp=0;self.suppress_release=False
         self.capture_drops=0;self.playback_drops=0
         self.received_frames=0;self.receive_gap_ms=0;self.received_at=None;self.started_at=None
-        self.reported=False
+        self.reported=False;self.route=None
     def _received(self,data):
         if not self.active:return
         try:
@@ -50,22 +53,26 @@ class PacketAudio:
             self.key=wire.session_key(link.key,link.session,call_id,call['generation'],b'media')
             link.on_audio=self._received
         else:raise AirSIMError('不支持的音频连接方式')
-        args=['--raw','--format','s16','--rate','8000','--channels','1','--latency','40ms','-']
         try:
+            with self.lock:
+                if self.closed:raise AirSIMError('语音已取消')
+                self.route=EchoRoute()
+            self.route.start(self.stop_event)
             with self.lock:
                 if self.closed:raise AirSIMError('应用已退出')
                 self.stop_event.clear()
-                playback=subprocess.Popen(['pw-cat','--playback']+args,stdin=subprocess.PIPE,stderr=subprocess.DEVNULL)
+                playback=subprocess.Popen(self.route.playback(),stdin=subprocess.PIPE,stderr=subprocess.DEVNULL)
                 self.processes.append(playback)
                 # pw-cat uses stdio: a pipe otherwise buffers ~256 ms of 8 kHz
                 # PCM before flushing, defeating our 20 ms frames and queue cap.
-                capture=subprocess.Popen(['stdbuf','-o0','pw-cat','--record']+args,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+                capture=subprocess.Popen(self.route.capture(),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
                 self.processes.append(capture);self.active=True;self.started_at=time.monotonic()
+            microphone=SpeechPlayback(gain_db=9)
             def record():
                 while not self.stop_event.is_set():
                     pcm=capture.stdout.read(320)
                     if len(pcm)!=320:raise AirSIMError('麦克风不可用')
-                    if self.muted:pcm=bytes(320)
+                    pcm=bytes(320) if self.muted else microphone.process(pcm)
                     frame=(self.sequence,self.timestamp,pcm)
                     self.sequence+=1;self.timestamp=(self.timestamp+160)&0xffffffff
                     if self.sequence>=0xffffffff:raise AirSIMError('语音会话已达到序号上限')
@@ -86,6 +93,7 @@ class PacketAudio:
                                 await client.link.client.write_gatt_char(wire.AUDIO_UP,packet,response=False)
                         client.link.run(send(),2)
                     self.uplink_bytes+=320
+            speech=SpeechPlayback()
             def download():
                 last_sequence=-1
                 while not self.stop_event.is_set():
@@ -93,7 +101,7 @@ class PacketAudio:
                         sequence,pcm=self.frames.get(timeout=8)
                         if sequence<=last_sequence:continue
                         last_sequence=sequence
-                    playback.stdin.write(pcm);playback.stdin.flush();self.downlink_bytes+=len(pcm)
+                    playback.stdin.write(speech.process(pcm));playback.stdin.flush();self.downlink_bytes+=len(pcm)
             def worker(function):
                 try:function()
                 except Exception as error:
@@ -123,6 +131,7 @@ class PacketAudio:
                     process.terminate()
                     try:process.wait(timeout=.5)
                     except subprocess.TimeoutExpired:process.kill();process.wait(timeout=.5)
+            if self.route:self.route.close();self.route=None
             self.processes=[];threads,self.threads=self.threads,[]
         for thread in threads:
             if thread is not threading.current_thread():thread.join(timeout=.5)
@@ -149,7 +158,7 @@ class AudioRouter:
     def error(self):return self.engine.error
     @error.setter
     def error(self,value):self.engine.error=value
-    def start(self,client,call_id):
+    def start(self,client,call_id,*,early=False):
         if self.closed:raise AirSIMError('应用已退出')
         generation=self.generation
         self.engine.close()
@@ -157,7 +166,7 @@ class AudioRouter:
         if not getattr(target,'profile',None):raise AirSIMError('连接尚未就绪')
         with self.lock:
             if self.closed or generation!=self.generation:return
-            engine=PacketAudio() if target.profile.get('transport') == 'ble' else AudioSession()
+            engine=EarlyAudio() if early else (PacketAudio() if target.profile.get('transport') == 'ble' else AudioSession())
             self.engine=engine
         engine.start(target,call_id)
     def stop(self):self.engine.stop()

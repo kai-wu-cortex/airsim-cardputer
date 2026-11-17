@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import threading
 import time
+import urllib.parse
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -32,6 +33,9 @@ class Phone:
         self.tamper_route = self.tamper_health = self.tamper_dial = False
         self.expired = False
         self.direct_gateway = False
+        self.early_mode = False
+        self.early_pending = 0
+        self.early_mutate = lambda grant: grant
         self.last_registration = None
         self.fail_post = False
         self.seen_nonces = set()
@@ -100,8 +104,20 @@ class Phone:
                     return self.respond(401, {})
                 phone.seen_nonces.add(nonce)
                 if phone.fail_post and self.command == 'POST': return self.respond(503, {})
+                if self.path.startswith('/api/calls/early-media?') and phone.early_mode:
+                    if phone.early_pending:
+                        phone.early_pending -= 1
+                        return self.respond(202, {})
+                    call_id = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)['call_id'][0]
+                    grant = dict(version=1, agent_id=phone.agent, call_id=call_id,
+                                 session_id='early-fixture-session', expires_at=int(time.time()+phone.clock_offset)+30,
+                                 state='early_media', direction='recvonly', format='s16le-8000-mono')
+                    proof = '\n'.join(['AIRSIM-EARLY-MEDIA1', nonce, phone.agent, call_id, grant['session_id'],
+                                       str(grant['expires_at']), grant['state'], grant['direction'], grant['format']])
+                    grant['proof'] = sign(phone.secret, proof)
+                    return self.respond(200, phone.early_mutate(grant))
                 if self.path == '/v1/health':
-                    return self.respond(200, {**({'transport':'vowlan','battery':{'percent':38},'phone_number':'10000'} if phone.direct_gateway else {}), 'ok': True, 'agent_id': phone.agent,
+                    return self.respond(200, {**({'transport':'vowlan','battery':{'percent':38},'phone_number':'10000'} if phone.direct_gateway else {}), 'ok': True, 'agent_id': phone.agent, 'agent_kind':'mu300' if phone.early_mode else 'android',
                         'identity_proof': 'invalid' if phone.tamper_health else sign(phone.secret, f'AIRSIM-HEALTH1\n{nonce}\n{phone.agent}')})
                 if self.path == '/api/android/status': return self.respond(404,{}) if phone.direct_gateway else self.respond(200, {'model': 'HTTP 模拟手机'})
                 if self.path == '/api/sms': return self.respond(200, phone.messages)

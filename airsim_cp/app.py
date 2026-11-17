@@ -175,7 +175,7 @@ class App(Features,CallUI,Dashboard):
                     self.call_hint='';self.page='calls'
                 else:
                     self.page = 'calls'
-                self.next_poll = time.monotonic() + (5 if kind == 'refresh' else 0)
+                self.next_poll = time.monotonic() + ((1 if self.active_call() else 5) if kind == 'refresh' else 0)
             except Exception as error:
                 if kind=='dial':self.outgoing_audio_until=0
                 self.online = False if kind in ('refresh', 'pair') else self.online
@@ -329,10 +329,10 @@ class App(Features,CallUI,Dashboard):
         elif page == 'dial':
             self.dial_from_ui(values[0])
 
-    def start_audio(self, identity):
+    def start_audio(self, identity, *, early=False):
         self.audio_call_id = identity
         token=self.call_token()
-        self.submit(lambda: self.audio.start(self.client, identity)
+        self.submit(lambda: (self.audio.start(self.client, identity, early=True) if early else self.audio.start(self.client, identity))
                     if self.audio_intent==token and self.call_token()==token else None, 'audio')
 
     def stop_audio(self):
